@@ -33,11 +33,12 @@
   :group 'helix)
 
 (defvar-local helix--current-state 'normal
-  "Current modal state, one of normal or insert.")
+  "Current modal state, one of normal, insert, or motion.")
 
 (defvar helix-state-mode-alist
   `((insert . helix-insert-mode)
-    (normal . helix-normal-mode))
+    (normal . helix-normal-mode)
+    (motion . helix-motion-mode))
   "Alist of symbol state name to minor mode.")
 
 (defvar helix--current-selection nil
@@ -682,6 +683,12 @@ Example that defines the typable command ':format':
     keymap)
   "Keymap for Helix normal state.")
 
+(defvar helix-motion-state-keymap
+  (let ((keymap (make-keymap)))
+    (suppress-keymap keymap t)
+    keymap)
+  "Keymap for Helix motion state.")
+
 (defvar helix-insert-state-keymap
   (let ((keymap (make-keymap)))
     (define-key keymap [escape] #'helix-insert-exit)
@@ -691,6 +698,7 @@ Example that defines the typable command ':format':
 (defvar helix--state-to-keymap-alist
   `((insert . ,helix-insert-state-keymap)
     (normal . ,helix-normal-state-keymap)
+    (motion . ,helix-motion-state-keymap)
     (textobj . ,helix-textobj-map)
     (view . ,helix-view-map)
     (goto . ,helix-goto-map)
@@ -706,7 +714,8 @@ When MODE is nil, bind to the keymap associated with STATE from
 \\='dired-mode), store the binding so it takes precedence via
 `minor-mode-overriding-map-alist' when that mode is active.
 
-Argument STATE must be one of: insert, normal, view, goto, window, space.
+Argument STATE must be one of: insert, normal, motion, view,
+goto, window, space.
 
 Argument KEY and DEF follow the same conventions as `define-key'.
 
@@ -720,7 +729,11 @@ Example:
   ;; Major-mode specific: override normal state bindings in dired
   (with-eval-after-load \\='dired
     (helix-define-key \\='normal \"j\" #\\='dired-next-line \\='dired-mode)
-    (helix-define-key \\='normal \"k\" #\\='dired-previous-line \\='dired-mode))"
+    (helix-define-key \\='normal \"k\" #\\='dired-previous-line \\='dired-mode))
+
+  ;; Motion state with major-mode specific bindings
+  (helix-define-key \\='motion \"j\" #\\='next-line \\='prog-mode)
+  (helix-define-key \\='motion \"k\" #\\='previous-line \\='prog-mode)"
   (unless (alist-get state helix--state-to-keymap-alist)
     (error "Invalid state %s" state))
   (if mode
@@ -764,6 +777,23 @@ Example:
       (progn
         (setq-local helix--current-state 'insert)
         (setq cursor-type 'bar))
+    (setq-local helix--current-state 'normal)))
+
+;;;###autoload
+(define-minor-mode helix-motion-mode
+  "Helix MOTION state minor mode for read-only navigation.
+Only j, k, g keys are available by default.
+Use `helix-define-key' with MODE argument to add major-mode specific bindings."
+  :lighter " helix[M]"
+  :init-value nil
+  :interactive nil
+  :global nil
+  :keymap helix-motion-state-keymap
+  (if helix-motion-mode
+      (progn
+        (setq-local helix--current-state 'motion)
+        (setq cursor-type 'box)
+        (helix--refresh-overriding-maps))
     (setq-local helix--current-state 'normal)))
 
 ;;;###autoload
@@ -818,9 +848,25 @@ Argument STATUS is passed through to `helix-mode-maybe-activate'."
         (helix-normal-mode 1))
     (cond
      (helix-normal-mode (helix-normal-mode -1))
-     (helix-insert-mode (helix-insert-mode -1)))
+     (helix-insert-mode (helix-insert-mode -1))
+     (helix-motion-mode (helix-motion-mode -1)))
     (advice-remove #'keyboard-quit #'helix--clear-data)
     (remove-hook 'after-change-major-mode-hook #'helix-mode-maybe-activate)))
+
+;;; State switching functions
+
+;;;###autoload
+(defun helix-motion ()
+  "Switch to motion state for read-only navigation.
+Only j, k, g keys are available by default."
+  (interactive)
+  (helix--switch-state 'motion))
+
+;;;###autoload
+(defun helix-normal-state ()
+  "Switch to normal state."
+  (interactive)
+  (helix--switch-state 'normal))
 
 (provide 'helix-core)
 ;;; helix-core.el ends here
