@@ -37,22 +37,23 @@
   "Alist mapping major modes to default Helix states.
 Each element should be a cons cell (MAJOR-MODE . STATE), where
 MAJOR-MODE is a symbol like `dired-mode', and STATE is one of
-`normal' or `insert'.
+`normal', `motion' or `insert'.
 When `helix-mode' is activated in a buffer, the state is chosen by
 looking up the current major mode in this alist, falling back to guess
 based on key bindings: if letters a-z are bound to self-insert commands,
-use `normal', otherwise `insert'."
+use `normal', otherwise `motion'."
   :type '(alist :key-type symbol :value-type
                 (choice (const normal) (const motion) (const insert)))
   :group 'helix)
 
 
 (defvar-local helix--current-state 'normal
-  "Current modal state, one of normal or insert.")
+  "Current modal state, one of normal, insert, or motion.")
 
 (defvar helix-state-mode-alist
   `((insert . helix-insert-mode)
-    (normal . helix-normal-mode))
+    (normal . helix-normal-mode)
+    (motion . helix-motion-mode))
   "Alist of symbol state name to minor mode.")
 
 (defvar helix--current-selection nil
@@ -120,7 +121,10 @@ Stores mode-specific helix bindings registered via `helix-define-key'.")
 (defun helix-insert-exit ()
   "Switch to normal state."
   (interactive)
-  (helix--switch-state 'normal))
+  (let ((state (helix--default-state-for-buffer)))
+    (when (eq state 'insert)
+      (setq state 'normal))
+    (helix--switch-state state)))
 
 (defun helix--clear-highlights ()
   "Clear any active highlight, unless `helix--current-state' is non-nil."
@@ -682,6 +686,12 @@ Example that defines the typable command ':format':
     keymap)
   "Keymap for Helix normal state.")
 
+(defvar helix-motion-state-keymap
+  (let ((keymap (make-keymap)))
+    (suppress-keymap keymap t)
+    keymap)
+  "Keymap for Helix motion state.")
+
 (defvar helix-insert-state-keymap
   (let ((keymap (make-keymap)))
     (define-key keymap [escape] #'helix-insert-exit)
@@ -691,6 +701,7 @@ Example that defines the typable command ':format':
 (defvar helix--state-to-keymap-alist
   `((insert . ,helix-insert-state-keymap)
     (normal . ,helix-normal-state-keymap)
+    (motion . ,helix-motion-state-keymap)
     (view . ,helix-view-map)
     (goto . ,helix-goto-map)
     (window . ,helix-window-map)
@@ -705,7 +716,8 @@ When MODE is nil, bind to the keymap associated with STATE from
 \\='dired-mode), store the binding so it takes precedence via
 `minor-mode-overriding-map-alist' when that mode is active.
 
-Argument STATE must be one of: insert, normal, view, goto, window, space.
+Argument STATE must be one of: insert, normal, motion, view,
+goto, window, space.
 
 Argument KEY and DEF follow the same conventions as `define-key'.
 
@@ -719,7 +731,11 @@ Example:
   ;; Major-mode specific: override normal state bindings in dired
   (with-eval-after-load \\='dired
     (helix-define-key \\='normal \"j\" #\\='dired-next-line \\='dired-mode)
-    (helix-define-key \\='normal \"k\" #\\='dired-previous-line \\='dired-mode))"
+    (helix-define-key \\='normal \"k\" #\\='dired-previous-line \\='dired-mode))
+
+  ;; Motion state with major-mode specific bindings
+  (helix-define-key \\='motion \"j\" #\\='next-line \\='prog-mode)
+  (helix-define-key \\='motion \"k\" #\\='previous-line \\='prog-mode)"
   (unless (alist-get state helix--state-to-keymap-alist)
     (error "Invalid state %s" state))
   (if mode
@@ -766,6 +782,23 @@ Example:
     (setq-local helix--current-state 'normal)))
 
 ;;;###autoload
+(define-minor-mode helix-motion-mode
+  "Helix MOTION state minor mode for read-only navigation.
+Only j, k, g keys are available by default.
+Use `helix-define-key' with MODE argument to add major-mode specific bindings."
+  :lighter " helix[M]"
+  :init-value nil
+  :interactive nil
+  :global nil
+  :keymap helix-motion-state-keymap
+  (if helix-motion-mode
+      (progn
+        (setq-local helix--current-state 'motion)
+        (setq cursor-type 'box)
+        (helix--refresh-overriding-maps))
+    (setq-local helix--current-state 'normal)))
+
+;;;###autoload
 (define-minor-mode helix-normal-mode
   "Helix NORMAL state minor mode."
   :lighter " helix[N]"
@@ -789,7 +822,7 @@ Example:
   "Return the default Helix state for the current buffer.
 Look up the current major mode in `helix-major-mode-default-states'.
 If no entry matches, guess based on key bindings: if letters a-z
-are bound to self-insert commands, use `normal', otherwise `insert'."
+are bound to self-insert commands, use `normal', otherwise `motion'."
   (or (seq-some (lambda (cell)
                   (when (derived-mode-p (car cell))
                     (cdr cell)))
@@ -799,7 +832,7 @@ are bound to self-insert commands, use `normal', otherwise `insert'."
                                           (helix--is-self-insert-p
                                            (key-binding letter)))
                                         letters)))
-        (if any-self-insert 'normal 'insert))))
+        (if any-self-insert 'normal 'motion))))
 
 (defun helix-mode-maybe-activate (&optional status)
   "Activate or deactivate Helix state if `helix-global-mode' is non-nil.
@@ -847,7 +880,8 @@ Argument STATUS is passed through to `helix-mode-maybe-activate'."
         (helix-mode-maybe-activate 1))
     (cond
      (helix-normal-mode (helix-normal-mode -1))
-     (helix-insert-mode (helix-insert-mode -1)))
+     (helix-insert-mode (helix-insert-mode -1))
+     (helix-motion-mode (helix-motion-mode -1)))
     (advice-remove #'keyboard-quit #'helix--clear-data)
     (remove-hook 'after-change-major-mode-hook #'helix-mode-maybe-activate)))
 
