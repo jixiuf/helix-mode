@@ -100,6 +100,7 @@ Nil if no find has taken place while `helix-mode' is active.")
 (defvar helix-view-map nil "Keymap for View mode.")
 (defvar helix-space-map nil "Keymap for Space mode.")
 (defvar helix-window-map nil "Keymap for Window mode.")
+(defvar helix-textobj-map nil "Keymap for textobj mode.")
 
 ;; Forward declaration - defined later with keymap initializers
 (defvar helix--state-to-keymap-alist)
@@ -837,6 +838,8 @@ Example that defines the typable command ':format':
     (define-prefix-command 'helix-view-map)
     (define-prefix-command 'helix-space-map)
     (define-prefix-command 'helix-window-map)
+    (define-prefix-command 'helix-textobj-map)
+
     (suppress-keymap keymap t)
 
     ;; Movement keys
@@ -884,6 +887,8 @@ Example that defines the typable command ':format':
     (define-key helix-goto-map "d" #'xref-find-definitions)
     (define-key helix-goto-map "y" #'eglot-find-typeDefinition)
     (define-key helix-goto-map "i" #'eglot-find-implementation)
+
+    (define-key keymap (kbd "m") 'helix-textobj-map)
 
     ;; View mode
     (define-key keymap "z" 'helix-view-map)
@@ -967,6 +972,7 @@ Example that defines the typable command ':format':
   `((insert . ,helix-insert-state-keymap)
     (normal . ,helix-normal-state-keymap)
     (motion . ,helix-motion-state-keymap)
+    (textobj . ,helix-textobj-map)
     (view . ,helix-view-map)
     (goto . ,helix-goto-map)
     (window . ,helix-window-map)
