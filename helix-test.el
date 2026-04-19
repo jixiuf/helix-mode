@@ -677,5 +677,310 @@
         ;; Non-overridden key falls back to helix binding
         (should (eq (lookup-key (cdr entry) "k") #'helix-previous-line))))))
 
+;;; Word text object tests
+
+(ert-deftest helix-test-textobj-word-basic ()
+  "Test basic word text object selection."
+  (with-temp-buffer
+    (insert ";; This buffer is for notes.")
+    (goto-char 4) ; at "T" of "This"
+    (call-interactively #'helix-mark-inner-word)
+    (should (eql (region-beginning) 4))
+    (should (eql (region-end) 8)))
+  (with-temp-buffer
+    (insert ";; This buffer is for notes.")
+    (goto-char 4)
+    (call-interactively #'helix-mark-a-word)
+    (should (eql (region-beginning) 4))
+    (should (eql (region-end) 9))))
+
+(ert-deftest helix-test-textobj-word-select-first ()
+  "Test selecting first word in buffer."
+  (with-temp-buffer
+    (insert "(a)")
+    (goto-char 2) ; inside the parens, on "a"
+    (call-interactively #'helix-mark-inner-word)
+    (should (eql (region-beginning) 2))
+    (should (eql (region-end) 3))))
+
+(ert-deftest helix-test-textobj-word-whitespace-line-bound ()
+  "Test selecting word when surrounded by whitespace."
+  (with-temp-buffer
+    (insert "foo\n  bar")
+    (goto-char 7)
+    (call-interactively #'helix-mark-inner-word)
+    (should (= (region-beginning) 7))))
+
+(ert-deftest helix-test-textobj-WORD-basic ()
+  "Test basic WORD text object selection."
+  (with-temp-buffer
+    (insert ";; This buffer is for notes.")
+    (goto-char 4)
+    (call-interactively #'helix-mark-inner-WORD)
+    (should (= (region-beginning) 4))
+    (should (= (region-end) 8))))
+
+(ert-deftest helix-test-textobj-word-cjk ()
+  "Test word text object with CJK characters."
+  (with-temp-buffer
+    (insert "abc漢字")
+    (goto-char 1)
+    (call-interactively #'helix-mark-inner-word)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 4))))
+
+;;; Symbol text object tests
+
+(ert-deftest helix-test-textobj-symbol-basic ()
+  "Test basic symbol text object selection."
+  (with-temp-buffer
+    (insert ";; This buffer is for notes.")
+    (goto-char 4) ; at "T" of "This"
+    (call-interactively #'helix-mark-inner-symbol)
+    (should (= (region-beginning) 4))
+    (should (= (region-end) 8))))
+
+;;; Sentence text object tests
+
+(ert-deftest helix-test-textobj-sentence-basic ()
+  "Test basic sentence text object selection."
+  (with-temp-buffer
+    (insert "This is sentence one. This is sentence two.")
+    (goto-char 1)
+    (call-interactively #'helix-mark-inner-sentence)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 44))))
+
+(ert-deftest helix-test-textobj-sentence-select ()
+  "Test selecting sentence from middle."
+  (with-temp-buffer
+    (insert "This is sentence one. This is sentence two.")
+    (goto-char 10)
+    (call-interactively #'helix-mark-inner-sentence)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 44))))
+
+;;; Paragraph text object tests
+
+(ert-deftest helix-test-textobj-paragraph-basic ()
+  "Test basic paragraph text object selection."
+  (with-temp-buffer
+    (insert ";; This buffer is for notes,
+;; and for Lisp evaluation.
+
+;; Another paragraph here.")
+    (goto-char 1)
+    (call-interactively #'helix-mark-inner-paragraph)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 58))))
+
+(ert-deftest helix-test-textobj-paragraph-select ()
+  "Test selecting paragraph at different positions."
+  (with-temp-buffer
+    (insert "First paragraph.
+
+Second paragraph.")
+    (goto-char 1)
+    (call-interactively #'helix-mark-inner-paragraph)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 18))))
+
+;;; Outer (a) text object tests
+
+(ert-deftest helix-test-textobj-a-word ()
+  "Test a-word text object selection."
+  (with-temp-buffer
+    (insert ";; This buffer is for notes.")
+    (goto-char 4)
+    (call-interactively #'helix-mark-a-word)
+    (should (= (region-beginning) 4))
+    (should (= (region-end) 9))))
+
+(ert-deftest helix-test-textobj-a-symbol ()
+  "Test a-symbol text object selection."
+  (with-temp-buffer
+    (insert ";; This buffer is for notes.")
+    (goto-char 4)
+    (call-interactively #'helix-mark-a-symbol)
+    (should (= (region-beginning) 4))
+    (should (= (region-end) 9))))
+
+(ert-deftest helix-test-textobj-a-sentence ()
+  "Test a-sentence text object selection."
+  (with-temp-buffer
+    (insert "This is sentence one. This is sentence two.")
+    (goto-char 1)
+    (call-interactively #'helix-mark-a-sentence)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 44))))
+
+(ert-deftest helix-test-textobj-a-paragraph ()
+  "Test a-paragraph text object selection."
+  (with-temp-buffer
+    (insert ";; This buffer is for notes,
+;; and for Lisp evaluation.
+
+;; Another paragraph here.")
+    (goto-char 1)
+    (call-interactively #'helix-mark-a-paragraph)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 58))))
+
+;;; Paren text object tests
+
+ (ert-deftest helix-test-textobj-paren-inner ()
+  "Test inner paren text object."
+  (with-temp-buffer
+    (insert "(hello)")
+    (goto-char 2)
+    (call-interactively #'helix-mark-inner-paren)
+    (should (= (region-beginning) 2))
+    (should (= (region-end) 7))))
+
+ (ert-deftest helix-test-textobj-paren-outer ()
+  "Test outer paren text object."
+  (with-temp-buffer
+    (insert "(hello)")
+    (goto-char 2)
+    (call-interactively #'helix-mark-a-paren)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 8))))
+
+;;; Bracket text object tests
+
+ (ert-deftest helix-test-textobj-bracket-inner ()
+  "Test inner bracket text object."
+  (with-temp-buffer
+    (insert "[hello]")
+    (goto-char 2)
+    (call-interactively #'helix-mark-inner-bracket)
+    (should (= (region-beginning) 2))
+    (should (= (region-end) 7))))
+
+ (ert-deftest helix-test-textobj-bracket-outer ()
+  "Test outer bracket text object."
+  (with-temp-buffer
+    (insert "[hello]")
+    (goto-char 2)
+    (call-interactively #'helix-mark-a-bracket)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 8))))
+
+;;; Brace text object tests
+
+ (ert-deftest helix-test-textobj-brace-inner ()
+  "Test inner brace text object."
+  (with-temp-buffer
+    (insert "{hello}")
+    (goto-char 2)
+    (call-interactively #'helix-mark-inner-brace)
+    (should (= (region-beginning) 2))
+    (should (= (region-end) 7))))
+
+ (ert-deftest helix-test-textobj-brace-outer ()
+  "Test outer brace text object."
+  (with-temp-buffer
+    (insert "{hello}")
+    (goto-char 2)
+    (call-interactively #'helix-mark-a-brace)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 8))))
+
+;;; Angle bracket text object tests
+
+ (ert-deftest helix-test-textobj-angle-inner ()
+  "Test inner angle bracket text object."
+  (with-temp-buffer
+    (insert "<hello>")
+    (goto-char 2)
+    (call-interactively #'helix-mark-inner-angle)
+    (should (= (region-beginning) 2))
+    (should (= (region-end) 7))))
+
+ (ert-deftest helix-test-textobj-angle-outer ()
+  "Test outer angle bracket text object."
+  (with-temp-buffer
+    (insert "<hello>")
+    (goto-char 2)
+    (call-interactively #'helix-mark-a-angle)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 8))))
+
+;;; Quote text object tests
+
+(ert-deftest helix-test-textobj-single-quote-inner ()
+  "Test inner single-quote text object."
+  (with-temp-buffer
+    (insert "'hello'")
+    (goto-char 2)
+    (call-interactively #'helix-mark-inner-single-quote)
+    (should (= (region-beginning) 2))
+    (should (= (region-end) 7))))
+
+(ert-deftest helix-test-textobj-single-quote-outer ()
+  "Test outer single-quote text object."
+  (with-temp-buffer
+    (insert "'hello'")
+    (goto-char 2)
+    (call-interactively #'helix-mark-a-single-quote)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 8))))
+
+(ert-deftest helix-test-textobj-double-quote-inner ()
+  "Test inner double-quote text object."
+  (with-temp-buffer
+    (insert "\"hello\"")
+    (goto-char 2)
+    (call-interactively #'helix-mark-inner-double-quote)
+    (should (= (region-beginning) 2))
+    (should (= (region-end) 7))))
+
+(ert-deftest helix-test-textobj-double-quote-outer ()
+  "Test outer double-quote text object."
+  (with-temp-buffer
+    (insert "\"hello\"")
+    (goto-char 2)
+    (call-interactively #'helix-mark-a-double-quote)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 8))))
+
+(ert-deftest helix-test-textobj-back-quote-inner ()
+  "Test inner back-quote text object."
+  (with-temp-buffer
+    (insert "`hello`")
+    (goto-char 2)
+    (call-interactively #'helix-mark-inner-back-quote)
+    (should (= (region-beginning) 2))
+    (should (= (region-end) 7))))
+
+(ert-deftest helix-test-textobj-back-quote-outer ()
+  "Test outer back-quote text object."
+  (with-temp-buffer
+    (insert "`hello`")
+    (goto-char 2)
+    (call-interactively #'helix-mark-a-back-quote)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 8))))
+
+;;; Tag text object tests
+
+(ert-deftest helix-test-textobj-tag-inner ()
+  "Test inner tag text object."
+  (with-temp-buffer
+    (insert "<foo>bar</foo>")
+    (goto-char 2)
+    (call-interactively #'helix-mark-inner-tag)
+    (should (= (region-beginning) 6))
+    (should (= (region-end) 9))))
+
+(ert-deftest helix-test-textobj-tag-outer ()
+  "Test outer tag text object."
+  (with-temp-buffer
+    (insert "<foo>bar</foo>")
+    (goto-char 2)
+    (call-interactively #'helix-mark-a-tag)
+    (should (= (region-beginning) 1))
+    (should (= (region-end) 15))))
+
 (provide 'helix-test)
 ;;; helix-test.el ends here

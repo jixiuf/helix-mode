@@ -75,6 +75,7 @@
   (require 'helix-multiple-cursors)
   (helix-multiple-cursors-setup))
 (require 'helix-jj)
+(require 'helix-textobj)
 
 (provide 'helix)
 ;;; helix.el ends here
