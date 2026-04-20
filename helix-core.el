@@ -27,10 +27,25 @@
 
 (require 'flymake)
 (require 'eglot)
+(require 'seq)
 
 (defgroup helix nil
   "Custom group for Helix."
   :group 'helix)
+
+(defcustom helix-major-mode-default-states '((calc-mode . insert))
+  "Alist mapping major modes to default Helix states.
+Each element should be a cons cell (MAJOR-MODE . STATE), where
+MAJOR-MODE is a symbol like `dired-mode', and STATE is one of
+`normal' or `insert'.
+When `helix-mode' is activated in a buffer, the state is chosen by
+looking up the current major mode in this alist, falling back to guess
+based on key bindings: if letters a-z are bound to self-insert commands,
+use `normal', otherwise `insert'."
+  :type '(alist :key-type symbol :value-type
+                (choice (const normal) (const motion) (const insert)))
+  :group 'helix)
+
 
 (defvar-local helix--current-state 'normal
   "Current modal state, one of normal or insert.")
@@ -764,18 +779,48 @@ Example:
         (setq cursor-type 'box)
         (helix--refresh-overriding-maps))))
 
-(defun helix-mode-maybe-activate (&optional status)
-  "Activate `helix-normal-mode' if `helix-global-mode' is non-nil.
+(defun helix--is-self-insert-p (cmd)
+  "Return non-nil if CMD is a self-insert command."
+  (and (symbolp cmd)
+       (string-match-p "\\`.*self-insert.*\\'"
+                       (symbol-name cmd))))
 
-A non-nil value of STATUS can be passed into `helix-normal-mode' for
-disabling."
+(defun helix--default-state-for-buffer ()
+  "Return the default Helix state for the current buffer.
+Look up the current major mode in `helix-major-mode-default-states'.
+If no entry matches, guess based on key bindings: if letters a-z
+are bound to self-insert commands, use `normal', otherwise `insert'."
+  (or (seq-some (lambda (cell)
+                  (when (derived-mode-p (car cell))
+                    (cdr cell)))
+                helix-major-mode-default-states)
+      (let* ((letters (split-string "abcdefghijklmnopqrstuvwxyz" "" t))
+             (any-self-insert (seq-some (lambda (letter)
+                                          (helix--is-self-insert-p
+                                           (key-binding letter)))
+                                        letters)))
+        (if any-self-insert 'normal 'insert))))
+
+(defun helix-mode-maybe-activate (&optional status)
+  "Activate or deactivate Helix state if `helix-global-mode' is non-nil.
+
+A positive STATUS activates the default state for the current buffer.
+A non-positive STATUS deactivates the current state.
+The default state is determined by `helix--default-state-for-buffer'."
   (when (and (not (minibufferp)) helix-global-mode)
-    (helix-normal-mode (if status status 1))
-    (helix--refresh-overriding-maps)))
+    (if (and status (<= status 0))
+        ;; Deactivate current state
+        (let ((mode (alist-get helix--current-state helix-state-mode-alist)))
+          (funcall mode -1))
+      ;; Activate default state
+      (let* ((state (helix--default-state-for-buffer))
+            (mode (alist-get state helix-state-mode-alist)))
+        (funcall mode (if status status 1))
+        (helix--refresh-overriding-maps)))))
 
 ;;;###autoload
 (defun helix-mode-all (&optional status)
-  "Activate `helix-normal-mode' in all buffers.
+  "Activate Helix mode in all buffers with their default states.
 
 Argument STATUS is passed through to `helix-mode-maybe-activate'."
   (interactive)
@@ -799,7 +844,7 @@ Argument STATUS is passed through to `helix-mode-maybe-activate'."
         ;; Ensure `keyboard-quit' clears out intermediate Helix state.
         (advice-add #'keyboard-quit :before #'helix--clear-data)
         (add-hook 'after-change-major-mode-hook #'helix-mode-maybe-activate)
-        (helix-normal-mode 1))
+        (helix-mode-maybe-activate 1))
     (cond
      (helix-normal-mode (helix-normal-mode -1))
      (helix-insert-mode (helix-insert-mode -1)))
