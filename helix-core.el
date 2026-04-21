@@ -254,21 +254,31 @@ previous character before moving to the previous long word."
 (defun helix-select-line ()
   "Select the current line, moving the cursor to the end."
   (interactive)
-  (if (and (region-active-p) (eolp))
-      (progn
-        (call-interactively #'next-line)
-        (end-of-line))
+  (if (region-active-p)
+      (if (or (> (point) (mark))
+              (and (= (point) (mark))
+                   (eq last-command 'helix-select-line)))
+          (progn
+            (call-interactively #'next-line)
+            (end-of-line))
+        (call-interactively #'previous-line)
+        (beginning-of-line))
     (beginning-of-line)
     (push-mark-command t t)
     (end-of-line)))
 
 (defun helix-select-line-up ()
-  "Select the current line, extending upward on every subsequent call."
+  "Select the current line, extending selection based on region direction."
   (interactive)
-  (if (and (region-active-p) (bolp))
-      (progn
-        (call-interactively #'previous-line)
-        (beginning-of-line))
+  (if (region-active-p)
+      (if (or (< (point) (mark))
+              (and (= (point) (mark))
+                   (eq last-command 'helix-select-line-up)))
+          (progn
+            (call-interactively #'previous-line)
+            (beginning-of-line))
+        (call-interactively #'next-line)
+        (end-of-line))
     (end-of-line)
     (push-mark-command t t)
     (beginning-of-line)))
