@@ -46,6 +46,13 @@ use `normal', otherwise `motion'."
                 (choice (const normal) (const motion) (const insert)))
   :group 'helix)
 
+(defcustom helix-replace-yanked-delete-char-p t
+  "When non-nil, delete char at point before inserting yanked text.
+When no region is active, this controls whether to replace the char
+at point (t) or simply insert without deleting (nil)."
+  :type 'boolean
+  :group 'helix)
+
 
 (defvar-local helix--current-state 'normal
   "Current modal state, one of normal, insert, or motion.")
@@ -58,6 +65,11 @@ use `normal', otherwise `motion'."
 
 (defvar helix--current-selection nil
   "Beginning point of current visual selection.")
+
+(defvar-local helix--selection-type nil
+  "Current selection type.
+nil means charwise, `line' means linewise.
+Designed to be extended with `rect' in the future.")
 
 (defvar helix-global-mode nil
   "Enable Helix mode in all buffers.")
@@ -109,6 +121,7 @@ Stores mode-specific helix bindings registered via `helix-define-key'.")
 (defun helix--clear-data ()
   "Clear any intermediate data, e.g. selections/mark."
   (setq helix--current-selection nil)
+  (setq helix--selection-type nil)
   (deactivate-mark))
 
 (defun helix-insert ()
@@ -284,7 +297,8 @@ previous character before moving to the previous long word."
         (beginning-of-line))
     (beginning-of-line)
     (push-mark-command t t)
-    (end-of-line)))
+    (end-of-line))
+  (setq helix--selection-type 'line))
 
 (defun helix-select-line-up ()
   "Select the current line, extending selection based on region direction."
@@ -300,18 +314,87 @@ previous character before moving to the previous long word."
         (end-of-line))
     (end-of-line)
     (push-mark-command t t)
-    (beginning-of-line)))
+    (beginning-of-line))
+  (setq helix--selection-type 'line))
+
+;;; Line-wise helpers
+
+(defun helix--selection-type ()
+  "Return current selection type, or nil.
+Validates that the region actually matches the claimed type.
+Currently supports `line'; designed to be extended with `rect'."
+  (when (region-active-p)
+    (cond
+     ((eq helix--selection-type 'line)
+      (let ((beg (region-beginning))
+            (end (region-end)))
+        (when (and (save-excursion (goto-char beg) (bolp))
+                   (save-excursion (goto-char end) (or (eolp) (eobp))))
+          'line)))
+     ;; future: rect support
+     )))
+
+(defun helix--yank-handler-line-wise (text)
+  "Insert TEXT as a complete line.
+Dispatches on `this-command' to decide insertion position."
+  (cond
+   ((member this-command '(helix-yank helix-replace-yanked))
+    (end-of-line)
+    (newline)
+    (insert (string-trim-right text "\n"))
+    (beginning-of-line)
+    (back-to-indentation))
+   ((eq this-command 'helix-yank-before)
+    (beginning-of-line)
+    (save-excursion
+      (insert text)
+      (unless (bolp) (newline)))
+    (back-to-indentation))
+   (t
+    (insert text))))
+
+(defun helix--linewise-text (text)
+  "Return a copy of TEXT propertized with line-wise yank-handler.
+Ensures TEXT ends with a newline."
+  (let ((s (if (and (> (length text) 0)
+                    (/= (aref text (1- (length text))) ?\n))
+               (concat text "\n")
+             text)))
+    (propertize s 'yank-handler '(helix--yank-handler-line-wise nil t))))
+
+(defun helix--linewise-kill-p (&optional text)
+  "Return non-nil if TEXT (default: top of kill ring) was killed line-wise."
+  (when-let* ((s (or text (and kill-ring (current-kill 0 t)))))
+    (eq (car-safe (get-text-property 0 'yank-handler s))
+        'helix--yank-handler-line-wise)))
+
+(defun helix--line-bounds-of-region ()
+  "Return (BEG . END) expanded to full line boundaries.
+BEG is at bol of region-beginning, END includes the trailing newline."
+  (when (use-region-p)
+    (let ((beg (save-excursion (goto-char (region-beginning)) (pos-bol)))
+          (end (save-excursion (goto-char (region-end))
+                               (if (bolp) (point)
+                                 (min (1+ (pos-eol)) (point-max))))))
+      (cons beg end))))
 
 (defun helix-kill-thing-at-point ()
-  "Kill current region or current point."
+  "Kill current region or delete char at point.
+When selection is line-wise, tag the killed text with a line-wise yank-handler."
   (interactive)
-  (if (use-region-p)
-      (progn
-        ;; Ensure complete line selections remove newline characters.
-        (when (and (eolp) (<= (region-beginning) (pos-bol)))
-          (forward-visible-line 1))
-        (kill-region (region-beginning) (region-end)))
+  (cond
+   ((not (use-region-p))
     (delete-char 1))
+   ((eq (helix--selection-type) 'line)
+    (if-let* ((bounds (helix--line-bounds-of-region))
+              (text (filter-buffer-substring (car bounds) (cdr bounds))))
+        (progn
+          (kill-new (helix--linewise-text text))
+          (delete-region (car bounds) (cdr bounds)))))
+   (t
+    (when (and (eolp) (<= (region-beginning) (pos-bol)))
+      (forward-visible-line 1))
+    (kill-region (region-beginning) (region-end))))
   (helix--clear-data))
 
 (defun helix-change-thing-at-point ()
@@ -323,6 +406,7 @@ previous character before moving to the previous long word."
 (defun helix-begin-selection ()
   "Begin selection at existing region or current point."
   (interactive)
+  (setq helix--selection-type nil)
   (unless helix--current-selection
     (if (use-region-p)
         ;; The 1+ is required, so that it selects from under the cursor
@@ -486,22 +570,69 @@ If `helix--current-selection' is nil, replace character at point."
 
 (defun helix-replace-yanked ()
   "Replace selection with the last stretch of killed text.
-
-If `helix--current-selection' is nil, replace character at point."
+Handles line-wise content appropriately."
   (interactive)
   (if (= 0 (length kill-ring))
       (message "nothing to yank")
-    (if helix--current-selection
+    (let* ((text (current-kill 0 t))
+           (linewise-p (helix--linewise-kill-p text))
+           (bare (string-trim-right (substring-no-properties text) "\n")))
+      (cond
+       ;; Line-wise selection: expand to full line bounds
+       ((and (use-region-p) (eq (helix--selection-type) 'line))
+        (when-let* ((bounds (helix--line-bounds-of-region)))
+          (delete-region (car bounds) (cdr bounds))
+          (insert (if linewise-p text (concat bare "\n")))))
+       ;; Charwise region
+       ((use-region-p)
+        (delete-region (region-beginning) (region-end))
+        (insert (if linewise-p bare (substring-no-properties text))))
+       ;; Legacy helix--current-selection
+       (helix--current-selection
         (delete-region helix--current-selection (point))
-      (delete-char 1))
-    (yank)
-    (helix--clear-data)))
+        (insert (if linewise-p bare (substring-no-properties text))))
+;; No region — replace char at point
+        (t
+         (when helix-replace-yanked-delete-char-p
+           (delete-char 1))
+         (helix-yank)))
+      (helix--clear-data))))
 
 (defun helix-kill-ring-save ()
-  "Save region to `kill-ring' and clear Helix selection data."
+  "Save region to `kill-ring' and clear Helix selection data.
+When selection is line-wise, tag the text with a line-wise yank-handler."
   (interactive)
-  (call-interactively #'kill-ring-save)
+  (when (use-region-p)
+    (cond
+     ((eq (helix--selection-type) 'line)
+      (when-let* ((bounds (helix--line-bounds-of-region))
+                  (text (filter-buffer-substring (car bounds) (cdr bounds))))
+        (kill-new (helix--linewise-text text))))
+     (t
+      (call-interactively #'kill-ring-save))))
   (helix--clear-data))
+
+(defun helix-yank (&optional arg)
+  "Paste from kill ring after point.
+Line-wise kills are pasted below the current line.
+Otherwise behaves like `yank'."
+  (interactive "*P")
+  (cond
+   ((helix--linewise-kill-p)
+    (insert-for-yank (current-kill 0 t)))
+   (t
+    (yank arg))))
+
+(defun helix-yank-before (&optional arg)
+  "Paste from kill ring before point.
+Line-wise kills are pasted above the current line.
+Otherwise behaves like `yank'."
+  (interactive "*P")
+  (cond
+   ((helix--linewise-kill-p)
+    (insert-for-yank (current-kill 0 t)))
+   (t
+    (yank arg))))
 
 (defun helix-indent-left ()
   "Indent region leftward and clear Helix selection data."
@@ -662,7 +793,8 @@ Example that defines the typable command ':format':
     (define-key keymap "x" #'helix-select-line)
     (define-key keymap "d" #'helix-kill-thing-at-point)
     (define-key keymap "y" #'helix-kill-ring-save)
-    (define-key keymap "p" #'yank)
+    (define-key keymap "p" #'helix-yank)
+    (define-key keymap "P" #'helix-yank-before)
     (define-key keymap "v" #'helix-begin-selection)
     (define-key keymap "u" #'undo)
     (define-key keymap "U" #'undo-redo)

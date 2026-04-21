@@ -677,5 +677,376 @@
         ;; Non-overridden key falls back to helix binding
         (should (eq (lookup-key (cdr entry) "k") #'helix-previous-line))))))
 
+;;; Line-wise helper tests
+
+(defmacro helix-test-with-buffer (content &rest body)
+  "Execute BODY in a temp buffer with CONTENT and transient-mark-mode on.
+Buffer starts with point at position 1."
+  (declare (indent 1))
+  `(with-temp-buffer
+     (transient-mark-mode 1)
+     (insert ,content)
+     (goto-char 1)
+     ,@body))
+
+(ert-deftest helix-test-linewise-text-adds-newline ()
+  "Test that `helix--linewise-text' ensures trailing newline."
+  (let ((text (helix--linewise-text "hello")))
+    (should (string= text "hello\n"))
+    (should (eq (car (get-text-property 0 'yank-handler text))
+                'helix--yank-handler-line-wise))))
+
+(ert-deftest helix-test-linewise-text-preserves-existing-newline ()
+  "Test that `helix--linewise-text' doesn't double newline."
+  (let ((text (helix--linewise-text "hello\n")))
+    (should (string= text "hello\n"))
+    (should (eq (car (get-text-property 0 'yank-handler text))
+                'helix--yank-handler-line-wise))))
+
+(ert-deftest helix-test-linewise-kill-p-positive ()
+  "Test `helix--linewise-kill-p' detects line-wise text."
+  (let ((text (helix--linewise-text "hello\n")))
+    (should (helix--linewise-kill-p text))))
+
+(ert-deftest helix-test-linewise-kill-p-negative ()
+  "Test `helix--linewise-kill-p' returns nil for plain text."
+  (should-not (helix--linewise-kill-p "hello")))
+
+(ert-deftest helix-test-linewise-kill-p-nil ()
+  "Test `helix--linewise-kill-p' returns nil when no kill ring."
+  (let ((kill-ring nil))
+    (should-not (helix--linewise-kill-p))))
+
+;;; helix--selection-type tests
+
+(ert-deftest helix-test-selection-type-nil-without-region ()
+  "Test `helix--selection-type' returns nil when no region."
+  (helix-test-with-buffer "hello"
+    (should-not (helix--selection-type))))
+
+(ert-deftest helix-test-selection-type-line-validated ()
+  "Test `helix--selection-type' validates line selection bounds."
+  (helix-test-with-buffer "first line\nsecond line\nthird line"
+    (push-mark (point) t t)
+    (end-of-line)
+    (setq helix--selection-type 'line)
+    (should (eq (helix--selection-type) 'line))))
+
+(ert-deftest helix-test-selection-type-line-invalidated ()
+  "Test `helix--selection-type' rejects invalid line selection."
+  (helix-test-with-buffer "first line\nsecond line"
+    ;; region doesn't start at bol
+    (goto-char 3)
+    (push-mark (point) t t)
+    (end-of-line)
+    (setq helix--selection-type 'line)
+    (should-not (helix--selection-type))))
+
+;;; helix-select-line sets selection type
+
+(ert-deftest helix-test-select-line-sets-type ()
+  "Test `helix-select-line' sets `helix--selection-type' to line."
+  (helix-test-with-buffer "first line\nsecond line\nthird line"
+    (setq helix--selection-type nil)
+    (helix-select-line)
+    (should (eq helix--selection-type 'line))
+    (should (region-active-p))))
+
+;;; helix--clear-data resets selection type
+
+(ert-deftest helix-test-clear-data-resets-type ()
+  "Test `helix--clear-data' resets `helix--selection-type'."
+  (helix-test-with-buffer "hello"
+    (setq helix--selection-type 'line)
+    (helix--clear-data)
+    (should-not helix--selection-type)))
+
+;;; helix--line-bounds-of-region tests
+
+(ert-deftest helix-test-line-bounds-single-line ()
+  "Test line bounds expansion for a single line selection."
+  (helix-test-with-buffer "first line\nsecond line\nthird line"
+    ;; Select "first line" (bol to eol)
+    (push-mark (point) t t)
+    (end-of-line)
+    (let ((bounds (helix--line-bounds-of-region)))
+      (should bounds)
+      ;; beg=1, end includes newline=12
+      (should (= (car bounds) 1))
+      (should (= (cdr bounds) 12)))))
+
+(ert-deftest helix-test-line-bounds-multi-line ()
+  "Test line bounds expansion for a multi-line selection."
+  (helix-test-with-buffer "first line\nsecond line\nthird line"
+    ;; Select from middle of first to middle of second
+    (goto-char 5)
+    (push-mark (point) t t)
+    (goto-char 18)
+    (let ((bounds (helix--line-bounds-of-region)))
+      (should bounds)
+      ;; Should expand to cover both full lines
+      (should (= (car bounds) 1))
+      (should (= (cdr bounds) 24)))))
+
+(ert-deftest helix-test-line-bounds-last-line-no-newline ()
+  "Test line bounds at end of buffer without trailing newline."
+  (helix-test-with-buffer "first line\nlast line"
+    (goto-char 12)
+    (push-mark (point) t t)
+    (goto-char (point-max))
+    (let ((bounds (helix--line-bounds-of-region)))
+      (should bounds)
+      (should (= (car bounds) 12))
+      ;; end should be point-max since no trailing newline
+      (should (= (cdr bounds) (point-max))))))
+
+;;; helix-kill-ring-save (y) line-wise tests
+
+(ert-deftest helix-test-kill-ring-save-linewise ()
+  "Test `helix-kill-ring-save' tags text as line-wise."
+  (helix-test-with-buffer "first line\nsecond line\nthird line"
+    (let ((kill-ring nil))
+      (helix-select-line)
+      (helix-kill-ring-save)
+      (should (helix--linewise-kill-p (car kill-ring)))
+      ;; Should include trailing newline
+      (should (string= (car kill-ring) "first line\n"))
+      ;; Buffer content unchanged
+      (should (string= (buffer-string) "first line\nsecond line\nthird line")))))
+
+(ert-deftest helix-test-kill-ring-save-charwise ()
+  "Test `helix-kill-ring-save' does not tag charwise text."
+  (helix-test-with-buffer "hello world"
+    (let ((kill-ring nil))
+      (push-mark (point) t t)
+      (goto-char 6)
+      (setq helix--selection-type nil)
+      (helix-kill-ring-save)
+      (should-not (helix--linewise-kill-p (car kill-ring)))
+      (should (string= (car kill-ring) "hello")))))
+
+;;; helix-kill-thing-at-point (d) line-wise tests
+
+(ert-deftest helix-test-kill-thing-linewise ()
+  "Test `helix-kill-thing-at-point' kills whole line and tags line-wise."
+  (helix-test-with-buffer "first line\nsecond line\nthird line"
+    (let ((kill-ring nil))
+      (helix-select-line)
+      (helix-kill-thing-at-point)
+      ;; Kill ring should have the line with trailing newline
+      (should (helix--linewise-kill-p (car kill-ring)))
+      (should (string= (car kill-ring) "first line\n"))
+      ;; Buffer should have remaining lines
+      (should (string= (buffer-string) "second line\nthird line")))))
+
+(ert-deftest helix-test-kill-thing-linewise-last-line ()
+  "Test killing the last line (no trailing newline in buffer)."
+  (helix-test-with-buffer "first line\nlast line"
+    (let ((kill-ring nil))
+      (goto-char 12)
+      (helix-select-line)
+      (helix-kill-thing-at-point)
+      (should (helix--linewise-kill-p (car kill-ring)))
+      (should (string= (buffer-string) "first line\n")))))
+
+(ert-deftest helix-test-kill-thing-linewise-multi-line ()
+  "Test killing multiple lines selected with helix-select-line."
+  (helix-test-with-buffer "line one\nline two\nline three"
+    (let ((kill-ring nil))
+      (helix-select-line)
+      (helix-select-line) ;; extend to second line
+      (helix-kill-thing-at-point)
+      (should (helix--linewise-kill-p (car kill-ring)))
+      (should (string= (car kill-ring) "line one\nline two\n"))
+      (should (string= (buffer-string) "line three")))))
+
+(ert-deftest helix-test-kill-thing-charwise ()
+  "Test `helix-kill-thing-at-point' without line-wise selection."
+  (helix-test-with-buffer "hello world"
+    (let ((kill-ring nil))
+      (push-mark (point) t t)
+      (goto-char 6)
+      (setq helix--selection-type nil)
+      (helix-kill-thing-at-point)
+      (should-not (helix--linewise-kill-p (car kill-ring)))
+      (should (string= (buffer-string) " world")))))
+
+(ert-deftest helix-test-kill-thing-no-region ()
+  "Test `helix-kill-thing-at-point' deletes char when no region."
+  (helix-test-with-buffer "hello"
+    (helix-kill-thing-at-point)
+    (should (string= (buffer-string) "ello"))))
+
+;;; helix-yank (p) line-wise tests
+
+(ert-deftest helix-test-yank-linewise-below ()
+  "Test `helix-yank' pastes line-wise content below current line."
+  (helix-test-with-buffer "first line\nsecond line"
+    ;; Put a line-wise kill in the kill ring
+    (kill-new (helix--linewise-text "new line\n"))
+    ;; Cursor on first line
+    (goto-char 5)
+    (let ((this-command 'helix-yank))
+      (helix-yank))
+    ;; "new line" should appear between first and second
+    (should (string= (buffer-string) "first line\nnew line\nsecond line"))))
+
+(ert-deftest helix-test-yank-linewise-at-last-line ()
+  "Test `helix-yank' pastes line-wise content below last line."
+  (helix-test-with-buffer "only line"
+    (kill-new (helix--linewise-text "new line\n"))
+    (goto-char 5)
+    (let ((this-command 'helix-yank))
+      (helix-yank))
+    (should (string= (buffer-string) "only line\nnew line"))))
+
+(ert-deftest helix-test-yank-charwise ()
+  "Test `helix-yank' pastes charwise content at point."
+  (helix-test-with-buffer "hello world"
+    (kill-new "XYZ")
+    (goto-char 6)
+    (helix-yank)
+    (should (string= (buffer-string) "helloXYZ world"))))
+
+;;; helix-yank-before (P) line-wise tests
+
+(ert-deftest helix-test-yank-before-linewise ()
+  "Test `helix-yank-before' pastes line-wise content above current line."
+  (helix-test-with-buffer "first line\nsecond line"
+    (kill-new (helix--linewise-text "new line\n"))
+    ;; Cursor on second line
+    (goto-char 15)
+    (let ((this-command 'helix-yank-before))
+      (helix-yank-before))
+    ;; "new line" should appear between first and second
+    (should (string= (buffer-string) "first line\nnew line\nsecond line"))))
+
+(ert-deftest helix-test-yank-before-linewise-first-line ()
+  "Test `helix-yank-before' pastes above first line."
+  (helix-test-with-buffer "only line"
+    (kill-new (helix--linewise-text "new line\n"))
+    (let ((this-command 'helix-yank-before))
+      (helix-yank-before))
+    (should (string= (buffer-string) "new line\nonly line"))))
+
+(ert-deftest helix-test-yank-before-charwise ()
+  "Test `helix-yank-before' pastes charwise content at point."
+  (helix-test-with-buffer "hello world"
+    (kill-new "XYZ")
+    (goto-char 6)
+    (helix-yank-before)
+    (should (string= (buffer-string) "helloXYZ world"))))
+
+;;; helix-replace-yanked (R) line-wise tests
+
+(ert-deftest helix-test-replace-yanked-linewise-selection-linewise-kill ()
+  "Test replacing line-wise selection with line-wise kill."
+  (helix-test-with-buffer "first line\nsecond line\nthird line"
+    (kill-new (helix--linewise-text "REPLACED\n"))
+    ;; Select second line
+    (goto-char 12)
+    (helix-select-line)
+    (helix-replace-yanked)
+    (should (string= (buffer-string) "first line\nREPLACED\nthird line"))))
+
+(ert-deftest helix-test-replace-yanked-linewise-selection-charwise-kill ()
+  "Test replacing line-wise selection with charwise kill."
+  (helix-test-with-buffer "first line\nsecond line\nthird line"
+    (kill-new "INLINE")
+    (goto-char 12)
+    (helix-select-line)
+    (helix-replace-yanked)
+    ;; Charwise kill replaces the full line
+    (should (string= (buffer-string) "first line\nINLINE\nthird line"))))
+
+(ert-deftest helix-test-replace-yanked-charwise-selection-linewise-kill ()
+  "Test replacing charwise selection with line-wise kill (strips newline)."
+  (helix-test-with-buffer "hello world"
+    (kill-new (helix--linewise-text "REPLACED\n"))
+    (push-mark (point) t t)
+    (goto-char 6)
+    (setq helix--selection-type nil)
+    (helix-replace-yanked)
+    ;; Line-wise kill should be stripped of trailing newline for inline replace
+    (should (string= (buffer-string) "REPLACED world"))))
+
+(ert-deftest helix-test-replace-yanked-no-region ()
+  "Test replacing char at point with kill ring content."
+  (helix-test-with-buffer "hello"
+    (kill-new "X")
+    (setq helix--selection-type nil)
+    (setq helix--current-selection nil)
+    (helix-replace-yanked)
+    (should (string= (buffer-string) "Xello")))
+
+  (helix-test-with-buffer "hello"
+    (let ((helix-replace-yanked-delete-char-p nil))
+      (kill-new "X")
+      (setq helix--selection-type nil)
+      (setq helix--current-selection nil)
+      (helix-replace-yanked)
+      (should (string= (buffer-string) "Xhello")))))
+
+(ert-deftest helix-test-replace-yanked-empty-kill-ring ()
+  "Test replace with empty kill ring shows message."
+  (helix-test-with-buffer "hello"
+    (let ((kill-ring nil))
+      (helix-replace-yanked)
+      ;; Buffer unchanged
+      (should (string= (buffer-string) "hello")))))
+
+;;; Integration: select-line -> kill -> yank round-trip
+
+(ert-deftest helix-test-linewise-round-trip ()
+  "Test full round-trip: select line, kill, then yank elsewhere."
+  (helix-test-with-buffer "line A\nline B\nline C"
+    (let ((kill-ring nil))
+      ;; Select and kill line B
+      (goto-char 8)
+      (helix-select-line)
+      (helix-kill-thing-at-point)
+      (should (string= (buffer-string) "line A\nline C"))
+      ;; Now yank (paste below) on line A
+      (goto-char 1)
+      (let ((this-command 'helix-yank))
+        (helix-yank))
+      (should (string= (buffer-string) "line A\nline B\nline C")))))
+
+(ert-deftest helix-test-linewise-copy-yank-round-trip ()
+  "Test round-trip: select line, copy, then yank-before."
+  (helix-test-with-buffer "line A\nline B\nline C"
+    (let ((kill-ring nil))
+      ;; Select and copy line A
+      (helix-select-line)
+      (helix-kill-ring-save)
+      ;; Yank before line C
+      (goto-char 15) ;; on line C
+      (let ((this-command 'helix-yank-before))
+        (helix-yank-before))
+      (should (string= (buffer-string) "line A\nline B\nline A\nline C")))))
+
+(ert-deftest helix-test-charwise-not-affected ()
+  "Test that charwise operations are unaffected by line-wise changes."
+  (helix-test-with-buffer "hello world"
+    (let ((kill-ring nil))
+      (push-mark (point) t t)
+      (goto-char 6)
+      (setq helix--selection-type nil)
+      (helix-kill-thing-at-point)
+      (should (string= (car kill-ring) "hello"))
+      (should-not (helix--linewise-kill-p (car kill-ring)))
+      (goto-char 1)
+      (helix-yank)
+      (should (string= (buffer-string) "hello world")))))
+
+;;; helix-begin-selection clears line type
+
+(ert-deftest helix-test-begin-selection-clears-line-type ()
+  "Test that `helix-begin-selection' clears line selection type."
+  (helix-test-with-buffer "hello"
+    (setq helix--selection-type 'line)
+    (helix-begin-selection)
+    (should-not helix--selection-type)))
+
 (provide 'helix-test)
 ;;; helix-test.el ends here
