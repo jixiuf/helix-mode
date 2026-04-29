@@ -1285,5 +1285,62 @@ Buffer starts with point at position 1."
     (helix-previous-line)
     (should rectangle-mark-mode)))
 
+;;; Rect change (c) with replay
+
+(ert-deftest helix-test-rect-change-multi-line ()
+  "Test `c` on rect replays inserted text on all rect lines."
+  (helix-test-with-buffer "ABC line1\nDEF line2\nGHI line3"
+    (goto-char 1)
+    (push-mark (point) t t)
+    (goto-char 14) ;; col 3 on line 2
+    (rectangle-mark-mode 1)
+    (setq helix--selection-type 'rect)
+    (helix-change-thing-at-point)
+    ;; Rect deleted, now type text in insert mode
+    (insert "XXX")
+    (helix-insert-exit)
+    (should (string= (buffer-string) "XXX line1\nXXX line2\nGHI line3"))))
+
+(ert-deftest helix-test-rect-change-empty-input ()
+  "Test `c` on rect with empty input just deletes the rect."
+  (helix-test-with-buffer "ABC line1\nDEF line2\nGHI line3"
+    (goto-char 1)
+    (push-mark (point) t t)
+    (goto-char 14)
+    (rectangle-mark-mode 1)
+    (setq helix--selection-type 'rect)
+    (helix-change-thing-at-point)
+    ;; Exit immediately without typing anything
+    (helix-insert-exit)
+    (should (string= (buffer-string) " line1\n line2\nGHI line3"))))
+
+(ert-deftest helix-test-rect-change-single-line ()
+  "Test `c` on single-line rect (no replay needed)."
+  (helix-test-with-buffer "ABC line1\nDEF line2"
+    (goto-char 1)
+    (push-mark (point) t t)
+    (goto-char 3) ;; col 2 on same line
+    (rectangle-mark-mode 1)
+    (setq helix--selection-type 'rect)
+    (helix-change-thing-at-point)
+    (insert "XXX")
+    (helix-insert-exit)
+    ;; Only line 1 changed; line-count=1 → no replay
+    (should (string= (buffer-string) "XXXC line1\nDEF line2"))))
+
+(ert-deftest helix-test-rect-change-clears-replay-data ()
+  "Test that rect replay data is cleared after exit."
+  (helix-test-with-buffer "ABC line1\nDEF line2\nGHI line3"
+    (goto-char 1)
+    (push-mark (point) t t)
+    (goto-char 14)
+    (rectangle-mark-mode 1)
+    (setq helix--selection-type 'rect)
+    (helix-change-thing-at-point)
+    (insert "XXX")
+    (helix-insert-exit)
+    (should-not helix--rect-replay-data)
+    (should-not helix--rect-replay-marker)))
+
 (provide 'helix-test)
 ;;; helix-test.el ends here

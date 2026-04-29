@@ -71,6 +71,12 @@ at point (t) or simply insert without deleting (nil)."
   "Current selection type.
 nil means charwise, `line' means linewise, `rect' means rectangle.")
 
+(defvar-local helix--rect-replay-data nil
+  "Plist for rect change replay: (:col N :line-count N).")
+
+(defvar-local helix--rect-replay-marker nil
+  "Marker at insertion point before entering insert for rect change.")
+
 (defvar helix-global-mode nil
   "Enable Helix mode in all buffers.")
 
@@ -136,6 +142,8 @@ Stores mode-specific helix bindings registered via `helix-define-key'.")
 (defun helix-insert-exit ()
   "Switch to normal state."
   (interactive)
+  (when helix--rect-replay-data
+    (helix--rect-replay))
   (let ((state (helix--default-state-for-buffer)))
     (when (eq state 'insert)
       (setq state 'normal))
@@ -423,6 +431,38 @@ One per line of the rectangle."
   (when (and (use-region-p) rectangle-mark-mode)
     (extract-rectangle-bounds (region-beginning) (region-end))))
 
+;;; Rect change with replay
+
+(defun helix--rect-change ()
+  "Kill rectangle content, enter insert mode, and replay typed text on all rect lines."
+  (let* ((beg (region-beginning))
+         (end (region-end))
+         (line-count (count-lines beg end))
+         (col (save-excursion (goto-char beg) (current-column)))
+         (lines (extract-rectangle beg end)))
+    (delete-rectangle beg end)
+    (kill-new (helix--rect-wise-text lines))
+    (goto-char beg)
+    (setq helix--rect-replay-marker (point-marker))
+    (setq helix--rect-replay-data `(:col ,col :line-count ,line-count))
+    (helix--switch-state 'insert)))
+
+(defun helix--rect-replay ()
+  "Replay inserted text from rect change on remaining rectangle lines."
+  (when (and helix--rect-replay-data helix--rect-replay-marker)
+    (let* ((col (plist-get helix--rect-replay-data :col))
+           (line-count (plist-get helix--rect-replay-data :line-count))
+           (text (buffer-substring helix--rect-replay-marker (point))))
+      (save-excursion
+        (dotimes (_ (1- line-count))
+          (forward-line 1)
+          (move-to-column col t)
+          (insert text)))
+      (setq helix--rect-replay-data nil)
+      (when helix--rect-replay-marker
+        (set-marker helix--rect-replay-marker nil)
+        (setq helix--rect-replay-marker nil)))))
+
 (defun helix-kill-thing-at-point ()
   "Kill current region or delete char at point.
 When selection is line-wise, tag the killed text with a line-wise yank-handler.
@@ -448,10 +488,13 @@ When selection is rect, tag with a rect-wise yank-handler."
   (helix--clear-data))
 
 (defun helix-change-thing-at-point ()
-  "Remove the current region or current point and enter insert-mode."
+  "Remove the current region or current point and enter insert-mode.
+When selection is rect, replay inserted text on all rect lines."
   (interactive)
-  (helix-kill-thing-at-point)
-  (helix--switch-state 'insert))
+  (if (and (use-region-p) (eq (helix--selection-type) 'rect))
+      (helix--rect-change)
+    (helix-kill-thing-at-point)
+    (helix--switch-state 'insert)))
 
 (defun helix-begin-selection ()
   "Begin selection at existing region or current point."
