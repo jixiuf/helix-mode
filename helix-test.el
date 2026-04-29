@@ -1048,5 +1048,242 @@ Buffer starts with point at position 1."
     (helix-begin-selection)
     (should-not helix--selection-type)))
 
+;;; Rect selection tests
+
+(ert-deftest helix-test-select-rectangle-starts-rect ()
+  "Test `helix-select-rectangle' starts rectangle-mark-mode."
+  (helix-test-with-buffer "first line\nsecond line\nthird line"
+    (call-interactively #'helix-select-rectangle)
+    (should rectangle-mark-mode)
+    (should (eq helix--selection-type 'rect))
+    (should (region-active-p))))
+
+(ert-deftest helix-test-select-rectangle-extends ()
+  "Test `helix-select-rectangle' extends rectangle downward."
+  (helix-test-with-buffer "first line\nsecond line\nthird line"
+    (call-interactively #'helix-select-rectangle)
+    (setq last-command 'helix-select-rectangle)
+    (let ((mark-pos (mark)))
+      (call-interactively #'helix-select-rectangle)
+      (should (> (point) mark-pos))
+      (should rectangle-mark-mode))))
+
+;;; helix--selection-type rect tests
+
+(ert-deftest helix-test-selection-type-rect ()
+  "Test `helix--selection-type' returns `rect' for rectangle selection."
+  (helix-test-with-buffer "first line\nsecond line\nthird line"
+    (setq helix--selection-type 'rect)
+    (push-mark (point) t t)
+    (goto-char 8)
+    (rectangle-mark-mode 1)
+    (should (eq (helix--selection-type) 'rect))
+    (rectangle-mark-mode -1)))
+
+(ert-deftest helix-test-selection-type-rect-without-mode ()
+  "Test `helix--selection-type' returns nil when rect type but mode off."
+  (helix-test-with-buffer "first line\nsecond line"
+    (setq helix--selection-type 'rect)
+    (push-mark (point) t t)
+    (goto-char 8)
+    ;; rectangle-mark-mode not active
+    (should-not (helix--selection-type))))
+
+;;; helix--clear-data clears rect mode
+
+(ert-deftest helix-test-clear-data-clears-rect ()
+  "Test `helix--clear-data' disables rectangle-mark-mode."
+  (helix-test-with-buffer "first line\nsecond line"
+    (helix-select-rectangle)
+    (helix--clear-data)
+    (should-not rectangle-mark-mode)
+    (should-not helix--selection-type)))
+
+;;; helix--rect-wise-text and helix--rect-wise-kill-p tests
+
+(ert-deftest helix-test-rect-wise-text-propertizes ()
+  "Test `helix--rect-wise-text' propertizes text with rect handler."
+  (let* ((lines '("hel" "wor"))
+         (text (helix--rect-wise-text lines)))
+    (should (string= text "hel\nwor"))
+    (should (eq (car (get-text-property 0 'yank-handler text))
+                'helix--yank-handler-rect-wise))
+    (should (equal (nth 1 (get-text-property 0 'yank-handler text))
+                   lines))))
+
+(ert-deftest helix-test-rect-wise-kill-p-positive ()
+  "Test `helix--rect-wise-kill-p' detects rect text."
+  (let ((text (helix--rect-wise-text '("AAA" "BBB"))))
+    (should (helix--rect-wise-kill-p text))))
+
+(ert-deftest helix-test-rect-wise-kill-p-negative ()
+  "Test `helix--rect-wise-kill-p' returns nil for plain text."
+  (should-not (helix--rect-wise-kill-p "plain")))
+
+(ert-deftest helix-test-rect-wise-kill-p-nil-kill-ring ()
+  "Test `helix--rect-wise-kill-p' returns nil when no kill ring."
+  (let ((kill-ring nil))
+    (should-not (helix--rect-wise-kill-p))))
+
+;;; helix-kill-thing-at-point (d) rect tests
+
+(ert-deftest helix-test-kill-thing-rect ()
+  "Test killing a rectangle selection."
+  (helix-test-with-buffer "ABC line1\nDEF line2\nGHI line3"
+    (let ((kill-ring nil))
+      (goto-char 1)
+      (push-mark (point) t t)
+      (goto-char 14) ;; col 3 on line 2 (space after "DEF")
+      (rectangle-mark-mode 1)
+      (setq helix--selection-type 'rect)
+      (helix-kill-thing-at-point)
+      (should (helix--rect-wise-kill-p (car kill-ring)))
+      ;; After killing first 3 chars of first two lines:
+      (should (string= (buffer-string) " line1\n line2\nGHI line3"))
+      (should-not rectangle-mark-mode))))
+
+(ert-deftest helix-test-kill-thing-rect-single-line ()
+  "Test killing a single-line rectangle (like one char)."
+  (helix-test-with-buffer "ABCDE"
+    (let ((kill-ring nil))
+      (push-mark (point) t t)
+      (goto-char 2)
+      (rectangle-mark-mode 1)
+      (setq helix--selection-type 'rect)
+      (helix-kill-thing-at-point)
+      (should (helix--rect-wise-kill-p (car kill-ring)))
+      (should (string= (buffer-string) "BCDE"))
+      (should-not rectangle-mark-mode))))
+
+;;; helix-kill-ring-save (y) rect tests
+
+(ert-deftest helix-test-kill-ring-save-rect ()
+  "Test copying a rectangle to kill ring without deleting."
+  (helix-test-with-buffer "ABC line1\nDEF line2\nGHI line3"
+    (let ((kill-ring nil))
+      (goto-char 1)
+      (push-mark (point) t t)
+      (goto-char 14) ;; col 3 on line 2 (space after "DEF")
+      (rectangle-mark-mode 1)
+      (setq helix--selection-type 'rect)
+      (helix-kill-ring-save)
+      (should (helix--rect-wise-kill-p (car kill-ring)))
+      ;; Buffer content unchanged
+      (should (string= (buffer-string) "ABC line1\nDEF line2\nGHI line3"))
+      (should-not rectangle-mark-mode))))
+
+;;; helix-replace-yanked (R) rect tests
+
+(ert-deftest helix-test-replace-yanked-rect-with-rect ()
+  "Test replacing a rectangle selection with a rect kill."
+  (helix-test-with-buffer "ABC line1\nDEF line2\nGHI line3"
+    (kill-new (helix--rect-wise-text '("???" "XXX")))
+    (goto-char 1)
+    (push-mark (point) t t)
+    (goto-char 14) ;; col 3 on line 2
+    (rectangle-mark-mode 1)
+    (setq helix--selection-type 'rect)
+    (helix-replace-yanked)
+    (should (string= (buffer-string) "??? line1\nXXX line2\nGHI line3"))))
+
+(ert-deftest helix-test-replace-yanked-rect-with-charwise ()
+  "Test replacing a rect selection with a charwise kill."
+  (helix-test-with-buffer "ABC line1\nDEF line2\nGHI line3"
+    (kill-new "!!")
+    (goto-char 1)
+    (push-mark (point) t t)
+    (goto-char 14) ;; col 3 on line 2
+    (rectangle-mark-mode 1)
+    (setq helix--selection-type 'rect)
+    (helix-replace-yanked)
+    ;; "!!" inserted at top-left of rectangle area
+    (should (string= (buffer-string) "!! line1\n line2\nGHI line3"))))
+
+;;; helix-yank (p) rect tests
+
+(ert-deftest helix-test-yank-rect ()
+  "Test pasting a rect kill at point."
+  (helix-test-with-buffer "line1\nline2\nline3"
+    (kill-new (helix--rect-wise-text '("<<<" ">>>")))
+    (goto-char 1)
+    (helix-yank)
+    (should (string= (buffer-string) "<<<line1\n>>>line2\nline3"))))
+
+(ert-deftest helix-test-yank-rect-after ()
+  "Test pasting a rect kill after point."
+  (helix-test-with-buffer "AAline1\nBBline2\nCCline3"
+    (kill-new (helix--rect-wise-text '("--" "++")))
+    (goto-char 3) ;; after "AA"
+    (helix-yank)
+    (should (string= (buffer-string) "AA--line1\nBB++line2\nCCline3"))))
+
+;;; helix-yank-before (P) rect tests
+
+(ert-deftest helix-test-yank-before-rect ()
+  "Test pasting a rect kill before point."
+  (helix-test-with-buffer "line1\nline2\nline3"
+    (kill-new (helix--rect-wise-text '("<<<" ">>>")))
+    (goto-char 1)
+    (helix-yank-before)
+    (should (string= (buffer-string) "<<<line1\n>>>line2\nline3"))))
+
+;;; helix-begin-selection exits rect
+
+(ert-deftest helix-test-begin-selection-clears-rect ()
+  "Test that `helix-begin-selection' disables rectangle-mark-mode."
+  (helix-test-with-buffer "hello\nworld"
+    (helix-select-rectangle)
+    (should rectangle-mark-mode)
+    (helix-begin-selection)
+    (should-not rectangle-mark-mode)
+    (should-not helix--selection-type)))
+
+;;; Interaction: rect kill doesn't affect line-wise detection
+
+(ert-deftest helix-test-rect-kill-not-line-wise ()
+  "Test that rect-killed text is not detected as line-wise."
+  (let ((text (helix--rect-wise-text '("AAA" "BBB"))))
+    (should-not (helix--linewise-kill-p text))))
+
+(ert-deftest helix-test-line-kill-not-rect-wise ()
+  "Test that line-killed text is not detected as rect-wise."
+  (let ((text (helix--linewise-text "hello\n")))
+    (should-not (helix--rect-wise-kill-p text))))
+
+;;; Round-trip: rect select -> kill -> yank
+
+(ert-deftest helix-test-rect-round-trip ()
+  "Test full round-trip: select rect, kill, then yank elsewhere."
+  (helix-test-with-buffer "AAA line1\nBBB line2\nCCC line3"
+    (let ((kill-ring nil))
+      (goto-char 1)
+      (push-mark (point) t t)
+      (goto-char 14) ;; col 3 on line 2 (space after "BBB")
+      (rectangle-mark-mode 1)
+      (setq helix--selection-type 'rect)
+      (helix-kill-thing-at-point)
+      (should (string= (buffer-string) " line1\n line2\nCCC line3"))
+      ;; Now yank at beginning
+      (goto-char 1)
+      (helix-yank)
+      (should (string= (buffer-string) "AAA line1\nBBB line2\nCCC line3")))))
+
+;;; Movement preserves rectangle selection
+
+(ert-deftest helix-test-movement-preserves-rect ()
+  "Test that h/l/j/k movement preserves rectangle-mark-mode."
+  (helix-test-with-buffer "first line\nsecond line\nthird line"
+    (goto-char 4) ;; avoid beginning-of-buffer on backward-char
+    (call-interactively #'helix-select-rectangle)
+    (should rectangle-mark-mode)
+    (helix-backward-char)
+    (should rectangle-mark-mode)
+    (helix-forward-char)
+    (should rectangle-mark-mode)
+    (helix-next-line)
+    (should rectangle-mark-mode)
+    (helix-previous-line)
+    (should rectangle-mark-mode)))
+
 (provide 'helix-test)
 ;;; helix-test.el ends here

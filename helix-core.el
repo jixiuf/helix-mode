@@ -28,6 +28,7 @@
 (require 'flymake)
 (require 'eglot)
 (require 'seq)
+(require 'rect)
 
 (defgroup helix nil
   "Custom group for Helix."
@@ -68,8 +69,7 @@ at point (t) or simply insert without deleting (nil)."
 
 (defvar-local helix--selection-type nil
   "Current selection type.
-nil means charwise, `line' means linewise.
-Designed to be extended with `rect' in the future.")
+nil means charwise, `line' means linewise, `rect' means rectangle.")
 
 (defvar helix-global-mode nil
   "Enable Helix mode in all buffers.")
@@ -122,6 +122,8 @@ Stores mode-specific helix bindings registered via `helix-define-key'.")
   "Clear any intermediate data, e.g. selections/mark."
   (setq helix--current-selection nil)
   (setq helix--selection-type nil)
+  (when rectangle-mark-mode
+    (rectangle-mark-mode -1))
   (deactivate-mark))
 
 (defun helix-insert ()
@@ -140,8 +142,9 @@ Stores mode-specific helix bindings registered via `helix-define-key'.")
     (helix--switch-state state)))
 
 (defun helix--clear-highlights ()
-  "Clear any active highlight, unless `helix--current-state' is non-nil."
-  (unless helix--current-selection
+  "Clear any active highlight, unless `helix--current-state' is non-nil.
+Also preserve highlights when `rectangle-mark-mode' is active."
+  (unless (or helix--current-selection rectangle-mark-mode)
     (deactivate-mark)))
 
 (defun helix-backward-char ()
@@ -317,22 +320,39 @@ previous character before moving to the previous long word."
     (beginning-of-line))
   (setq helix--selection-type 'line))
 
+(defun helix-select-rectangle ()
+  "Start or extend rectangle selection.
+If rectangle-mark-mode is already active, extend the rectangle
+down one line.  Otherwise, start a rectangle selection at point."
+  (interactive)
+  (if rectangle-mark-mode
+      (progn
+        (if (or (> (point) (mark))
+                (and (= (point) (mark))
+                     (eq last-command 'helix-select-rectangle)))
+            (next-line)
+          (previous-line))
+        (rectangle--reset-point-crutches))
+    (push-mark (point) t t)
+    (rectangle-mark-mode 1))
+  (setq helix--selection-type 'rect))
+
 ;;; Line-wise helpers
 
 (defun helix--selection-type ()
   "Return current selection type, or nil.
 Validates that the region actually matches the claimed type.
-Currently supports `line'; designed to be extended with `rect'."
+Supports `line' and `rect'."
   (when (region-active-p)
     (cond
+     ((eq helix--selection-type 'rect)
+      (when rectangle-mark-mode 'rect))
      ((eq helix--selection-type 'line)
       (let ((beg (region-beginning))
             (end (region-end)))
         (when (and (save-excursion (goto-char beg) (bolp))
                    (save-excursion (goto-char end) (or (eolp) (eobp))))
-          'line)))
-     ;; future: rect support
-     )))
+          'line))))))
 
 (defun helix--yank-handler-line-wise (text)
   "Insert TEXT as a complete line.
@@ -378,13 +398,43 @@ BEG is at bol of region-beginning, END includes the trailing newline."
                                  (min (1+ (pos-eol)) (point-max))))))
       (cons beg end))))
 
+;;; Rect-wise helpers
+
+(defun helix--yank-handler-rect-wise (lines)
+  "Insert LINES as a rectangle at point."
+  (insert-rectangle lines))
+
+(defun helix--rect-wise-text (strings)
+  "Return a propertized string from STRINGS, a list of rect lines.
+Tags the text with a rect-wise yank-handler for proper pasting."
+  (let ((text (mapconcat #'identity strings "\n")))
+    (propertize text 'yank-handler
+                (list 'helix--yank-handler-rect-wise strings t))))
+
+(defun helix--rect-wise-kill-p (&optional text)
+  "Return non-nil if TEXT was killed as a rectangle."
+  (when-let* ((s (or text (and kill-ring (current-kill 0 t)))))
+    (eq (car-safe (get-text-property 0 'yank-handler s))
+        'helix--yank-handler-rect-wise)))
+
+(defun helix--rect-bounds-of-region ()
+  "Return the rectangle bounds as a list of cons cells (BEG . END).
+One per line of the rectangle."
+  (when (and (use-region-p) rectangle-mark-mode)
+    (extract-rectangle-bounds (region-beginning) (region-end))))
+
 (defun helix-kill-thing-at-point ()
   "Kill current region or delete char at point.
-When selection is line-wise, tag the killed text with a line-wise yank-handler."
+When selection is line-wise, tag the killed text with a line-wise yank-handler.
+When selection is rect, tag with a rect-wise yank-handler."
   (interactive)
   (cond
    ((not (use-region-p))
     (delete-char 1))
+   ((eq (helix--selection-type) 'rect)
+    (let ((lines (extract-rectangle (region-beginning) (region-end))))
+      (delete-rectangle (region-beginning) (region-end))
+      (kill-new (helix--rect-wise-text lines))))
    ((eq (helix--selection-type) 'line)
     (if-let* ((bounds (helix--line-bounds-of-region))
               (text (filter-buffer-substring (car bounds) (cdr bounds))))
@@ -406,10 +456,11 @@ When selection is line-wise, tag the killed text with a line-wise yank-handler."
 (defun helix-begin-selection ()
   "Begin selection at existing region or current point."
   (interactive)
+  (when rectangle-mark-mode
+    (rectangle-mark-mode -1))
   (setq helix--selection-type nil)
   (unless helix--current-selection
     (if (use-region-p)
-        ;; The 1+ is required, so that it selects from under the cursor
         (setq helix--current-selection (1+ (region-beginning)))
       (push-mark-command t t)
       (setq helix--current-selection (1+ (point))))))
@@ -570,14 +621,26 @@ If `helix--current-selection' is nil, replace character at point."
 
 (defun helix-replace-yanked ()
   "Replace selection with the last stretch of killed text.
-Handles line-wise content appropriately."
+Handles line-wise and rect content appropriately."
   (interactive)
   (if (= 0 (length kill-ring))
       (message "nothing to yank")
     (let* ((text (current-kill 0 t))
            (linewise-p (helix--linewise-kill-p text))
-           (bare (string-trim-right (substring-no-properties text) "\n")))
+           (rectwise-p (helix--rect-wise-kill-p text))
+           (bare (string-trim-right (substring-no-properties text) "\n"))
+           (bare-rect (unless (or linewise-p rectwise-p) bare)))
       (cond
+       ;; Rect selection
+       ((and (use-region-p) (eq (helix--selection-type) 'rect))
+        (let* ((beg (region-beginning))
+               (end (region-end))
+               (lines (nth 1 (get-text-property 0 'yank-handler text))))
+          (delete-rectangle beg end)
+          (goto-char beg)
+          (if (and rectwise-p lines)
+              (insert-rectangle lines)
+            (insert bare))))
        ;; Line-wise selection: expand to full line bounds
        ((and (use-region-p) (eq (helix--selection-type) 'line))
         (when-let* ((bounds (helix--line-bounds-of-region)))
@@ -586,24 +649,28 @@ Handles line-wise content appropriately."
        ;; Charwise region
        ((use-region-p)
         (delete-region (region-beginning) (region-end))
-        (insert (if linewise-p bare (substring-no-properties text))))
+        (insert (if (or linewise-p rectwise-p) bare (substring-no-properties text))))
        ;; Legacy helix--current-selection
        (helix--current-selection
         (delete-region helix--current-selection (point))
-        (insert (if linewise-p bare (substring-no-properties text))))
-;; No region — replace char at point
-        (t
-         (when helix-replace-yanked-delete-char-p
-           (delete-char 1))
-         (helix-yank)))
+        (insert (if (or linewise-p rectwise-p) bare (substring-no-properties text))))
+       ;; No region — replace char at point
+       (t
+        (when helix-replace-yanked-delete-char-p
+          (delete-char 1))
+        (helix-yank)))
       (helix--clear-data))))
 
 (defun helix-kill-ring-save ()
   "Save region to `kill-ring' and clear Helix selection data.
-When selection is line-wise, tag the text with a line-wise yank-handler."
+When selection is line-wise, tag the text with a line-wise yank-handler.
+When selection is rect, tag with a rect-wise yank-handler."
   (interactive)
   (when (use-region-p)
     (cond
+     ((eq (helix--selection-type) 'rect)
+      (let ((lines (extract-rectangle (region-beginning) (region-end))))
+        (kill-new (helix--rect-wise-text lines))))
      ((eq (helix--selection-type) 'line)
       (when-let* ((bounds (helix--line-bounds-of-region))
                   (text (filter-buffer-substring (car bounds) (cdr bounds))))
@@ -615,9 +682,15 @@ When selection is line-wise, tag the text with a line-wise yank-handler."
 (defun helix-yank (&optional arg)
   "Paste from kill ring after point.
 Line-wise kills are pasted below the current line.
+Rect kills are pasted as a rectangle.
 Otherwise behaves like `yank'."
   (interactive "*P")
   (cond
+   ((helix--rect-wise-kill-p)
+    (let ((lines (nth 1 (get-text-property 0 'yank-handler (current-kill 0 t)))))
+      (if lines
+          (insert-rectangle lines)
+        (insert-for-yank (current-kill 0 t)))))
    ((helix--linewise-kill-p)
     (insert-for-yank (current-kill 0 t)))
    (t
@@ -626,9 +699,15 @@ Otherwise behaves like `yank'."
 (defun helix-yank-before (&optional arg)
   "Paste from kill ring before point.
 Line-wise kills are pasted above the current line.
+Rect kills are pasted as a rectangle.
 Otherwise behaves like `yank'."
   (interactive "*P")
   (cond
+   ((helix--rect-wise-kill-p)
+    (let ((lines (nth 1 (get-text-property 0 'yank-handler (current-kill 0 t)))))
+      (if lines
+          (insert-rectangle lines)
+        (insert-for-yank (current-kill 0 t)))))
    ((helix--linewise-kill-p)
     (insert-for-yank (current-kill 0 t)))
    (t
@@ -796,6 +875,7 @@ Example that defines the typable command ':format':
     (define-key keymap "p" #'helix-yank)
     (define-key keymap "P" #'helix-yank-before)
     (define-key keymap "v" #'helix-begin-selection)
+    (define-key keymap (kbd "C-v") #'helix-select-rectangle)
     (define-key keymap "u" #'undo)
     (define-key keymap "U" #'undo-redo)
     (define-key keymap "o" #'helix-insert-newline)
